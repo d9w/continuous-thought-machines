@@ -12,6 +12,8 @@ import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.wrappers import NormalizeReward
+import minigrid
+from minigrid.wrappers import ImgObsWrapper
 import argparse
 from tqdm import tqdm
 
@@ -107,6 +109,17 @@ def make_env_classic_control(env_id, max_environment_steps, mask_velocity=True, 
     return thunk
 
 
+def make_env_minigrid(env_id, max_environment_steps):
+    def thunk():
+        env = gym.make(env_id, max_steps=max_environment_steps, render_mode="rgb_array")
+        env = ImgObsWrapper(env)
+        env = NormalizeReward(env, gamma=0.99, epsilon=1e-8)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_environment_steps)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        return env
+    return thunk
+
+
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
@@ -124,8 +137,11 @@ class HebbianAgent(nn.Module):
         self.model_type = args.model_type
         self.enable_hebbian = args.enable_hebbian
 
-        # Determine backbone type
-        backbone_type = 'classic-control-backbone'
+        # Determine backbone type based on environment
+        if "MiniGrid" in args.env_id:
+            backbone_type = 'navigation-backbone'
+        else:
+            backbone_type = 'classic-control-backbone'
 
         if args.model_type == "ctm":
             self.recurrent_model = ContinuousThoughtMachineRL(
@@ -317,10 +333,16 @@ def train(args):
         device = torch.device(f"cuda:{args.device[0]}" if torch.cuda.is_available() else "cpu")
 
     # Create environments
-    envs = gym.vector.SyncVectorEnv(
-        [make_env_classic_control(args.env_id, args.max_environment_steps, args.mask_velocity)
-         for i in range(args.num_envs)]
-    )
+    if "MiniGrid" in args.env_id:
+        envs = gym.vector.SyncVectorEnv(
+            [make_env_minigrid(args.env_id, args.max_environment_steps)
+             for i in range(args.num_envs)]
+        )
+    else:
+        envs = gym.vector.SyncVectorEnv(
+            [make_env_classic_control(args.env_id, args.max_environment_steps, args.mask_velocity)
+             for i in range(args.num_envs)]
+        )
 
     # Initialize agent
     agent = HebbianAgent(envs.single_action_space.n, args, device).to(device)

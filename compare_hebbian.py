@@ -1,7 +1,8 @@
 """
-Comparison script for Standard CTM vs Hebbian CTM on CartPole.
+Comparison script for Standard CTM vs Hebbian CTM on multiple RL environments.
 
-This script runs both approaches with the same hyperparameters and compares their performance.
+This script runs both approaches with the same hyperparameters and compares their performance
+on CartPole, Acrobot, LunarLander, and MiniGrid FourRooms.
 """
 import subprocess
 import os
@@ -17,20 +18,62 @@ project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(project_root))
 
 
+def get_env_config(env_id):
+    """Get environment-specific configuration."""
+    configs = {
+        "CartPole-v1": {
+            "total_timesteps": 100_000,
+            "d_model": 64,
+            "n_synch_out": 8,
+            "iterations": 1,
+            "memory_length": 3,
+            "mask_velocity": True,
+        },
+        "Acrobot-v1": {
+            "total_timesteps": 200_000,
+            "d_model": 64,
+            "n_synch_out": 8,
+            "iterations": 1,
+            "memory_length": 3,
+            "mask_velocity": True,
+        },
+        "LunarLander-v3": {
+            "total_timesteps": 500_000,
+            "d_model": 128,
+            "n_synch_out": 16,
+            "iterations": 1,
+            "memory_length": 5,
+            "mask_velocity": True,
+        },
+        "MiniGrid-FourRooms-v0": {
+            "total_timesteps": 1_000_000,
+            "d_model": 128,
+            "n_synch_out": 16,
+            "iterations": 2,
+            "memory_length": 5,
+            "mask_velocity": False,
+        },
+    }
+    return configs.get(env_id, configs["CartPole-v1"])
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare Standard CTM vs Hebbian CTM")
-    parser.add_argument('--env_id', type=str, default="CartPole-v1", help='Environment to test on')
-    parser.add_argument('--total_timesteps', type=int, default=100_000, help='Total timesteps per run')
+    parser.add_argument('--env_id', type=str, default="CartPole-v1",
+                       choices=["CartPole-v1", "Acrobot-v1", "LunarLander-v3", "MiniGrid-FourRooms-v0"],
+                       help='Environment to test on')
     parser.add_argument('--num_runs', type=int, default=3, help='Number of runs for each approach')
     parser.add_argument('--seed_start', type=int, default=42, help='Starting seed')
-    parser.add_argument('--d_model', type=int, default=64, help='Model dimension')
-    parser.add_argument('--n_synch_out', type=int, default=8, help='Number of sync neurons')
-    parser.add_argument('--iterations', type=int, default=1, help='Number of internal ticks')
-    parser.add_argument('--memory_length', type=int, default=3, help='Memory length')
+    # Optional overrides for environment config
+    parser.add_argument('--total_timesteps', type=int, default=None, help='Override total timesteps per run')
+    parser.add_argument('--d_model', type=int, default=None, help='Override model dimension')
+    parser.add_argument('--n_synch_out', type=int, default=None, help='Override number of sync neurons')
+    parser.add_argument('--iterations', type=int, default=None, help='Override number of internal ticks')
+    parser.add_argument('--memory_length', type=int, default=None, help='Override memory length')
     return parser.parse_args()
 
 
-def run_experiment(enable_hebbian, seed, args):
+def run_experiment(enable_hebbian, seed, env_config, args):
     """Run a single experiment."""
     hebbian_str = "hebbian" if enable_hebbian else "standard"
     print(f"\n{'='*60}")
@@ -42,16 +85,22 @@ def run_experiment(enable_hebbian, seed, args):
         "--model_type", "ctm",
         "--enable_hebbian" if enable_hebbian else "--no-enable_hebbian",
         "--env_id", args.env_id,
-        "--total_timesteps", str(args.total_timesteps),
+        "--total_timesteps", str(env_config['total_timesteps']),
         "--seed", str(seed),
-        "--d_model", str(args.d_model),
-        "--n_synch_out", str(args.n_synch_out),
-        "--iterations", str(args.iterations),
-        "--memory_length", str(args.memory_length),
-        "--run_name", f"comparison_{hebbian_str}_seed{seed}",
-        "--log_dir", f"logs/comparison/{hebbian_str}",
+        "--d_model", str(env_config['d_model']),
+        "--n_synch_out", str(env_config['n_synch_out']),
+        "--iterations", str(env_config['iterations']),
+        "--memory_length", str(env_config['memory_length']),
+        "--run_name", f"comparison_{args.env_id}_{hebbian_str}_seed{seed}",
+        "--log_dir", f"logs/comparison/{args.env_id}/{hebbian_str}",
         "--save_every", "20",
     ]
+
+    # Add velocity masking flag
+    if env_config['mask_velocity']:
+        cmd.append("--mask_velocity")
+    else:
+        cmd.append("--no-mask_velocity")
 
     # Add Hebbian-specific parameters
     if enable_hebbian:
@@ -68,7 +117,7 @@ def run_experiment(enable_hebbian, seed, args):
         print(result.stderr)
         return None
 
-    return f"logs/comparison/{hebbian_str}"
+    return f"logs/comparison/{args.env_id}/{hebbian_str}"
 
 
 def parse_tensorboard_logs(log_dir):
@@ -94,9 +143,12 @@ def parse_tensorboard_logs(log_dir):
     return np.array(steps), np.array(returns)
 
 
-def plot_comparison(standard_results, hebbian_results, save_path="comparison_results.png"):
+def plot_comparison(standard_results, hebbian_results, env_id, save_path="comparison_results.png"):
     """Plot comparison between standard and Hebbian CTM."""
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Clean environment name for title
+    env_name = env_id.replace('-v', ' v').replace('-', ' ')
 
     # Plot 1: Learning curves
     ax = axes[0]
@@ -125,7 +177,7 @@ def plot_comparison(standard_results, hebbian_results, save_path="comparison_res
 
     ax.set_xlabel('Environment Steps')
     ax.set_ylabel('Episode Return')
-    ax.set_title('Learning Curves: Standard vs Hebbian CTM')
+    ax.set_title(f'Learning Curves: {env_name}')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -179,13 +231,30 @@ def plot_comparison(standard_results, hebbian_results, save_path="comparison_res
 def main():
     args = parse_args()
 
+    # Get environment-specific configuration
+    env_config = get_env_config(args.env_id)
+
+    # Apply any command-line overrides
+    if args.total_timesteps is not None:
+        env_config['total_timesteps'] = args.total_timesteps
+    if args.d_model is not None:
+        env_config['d_model'] = args.d_model
+    if args.n_synch_out is not None:
+        env_config['n_synch_out'] = args.n_synch_out
+    if args.iterations is not None:
+        env_config['iterations'] = args.iterations
+    if args.memory_length is not None:
+        env_config['memory_length'] = args.memory_length
+
     print("="*60)
     print("COMPARING STANDARD CTM VS HEBBIAN CTM")
     print("="*60)
     print(f"Environment: {args.env_id}")
-    print(f"Total timesteps per run: {args.total_timesteps}")
+    print(f"Total timesteps per run: {env_config['total_timesteps']}")
     print(f"Number of runs: {args.num_runs}")
-    print(f"Model config: d_model={args.d_model}, n_synch_out={args.n_synch_out}")
+    print(f"Model config: d_model={env_config['d_model']}, n_synch_out={env_config['n_synch_out']}")
+    print(f"Iterations: {env_config['iterations']}, Memory length: {env_config['memory_length']}")
+    print(f"Mask velocity: {env_config['mask_velocity']}")
     print("="*60)
 
     # Run experiments
@@ -196,12 +265,12 @@ def main():
         seed = args.seed_start + run
 
         # Run standard CTM
-        log_dir = run_experiment(enable_hebbian=False, seed=seed, args=args)
+        log_dir = run_experiment(enable_hebbian=False, seed=seed, env_config=env_config, args=args)
         if log_dir:
             standard_log_dirs.append(log_dir)
 
         # Run Hebbian CTM
-        log_dir = run_experiment(enable_hebbian=True, seed=seed, args=args)
+        log_dir = run_experiment(enable_hebbian=True, seed=seed, env_config=env_config, args=args)
         if log_dir:
             hebbian_log_dirs.append(log_dir)
 
@@ -228,7 +297,8 @@ def main():
         print("GENERATING COMPARISON PLOTS...")
         print("="*60)
 
-        standard_final, hebbian_final = plot_comparison(standard_results, hebbian_results)
+        save_path = f"comparison_results_{args.env_id}.png"
+        standard_final, hebbian_final = plot_comparison(standard_results, hebbian_results, args.env_id, save_path)
 
         # Print summary statistics
         print("\n" + "="*60)

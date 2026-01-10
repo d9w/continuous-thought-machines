@@ -24,11 +24,20 @@ class MaskVelocityWrapper(gym.Wrapper):
             return self._apply_velocity_mask_cartpole(observation)
         elif gym_id == "Acrobot-v1":
             return self._apply_velocity_mask_acrobot(observation)
+        elif gym_id == "LunarLander-v3":
+            return self._apply_velocity_mask_lunarlander(observation)
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Velocity masking not implemented for {gym_id}")
 
     def _apply_velocity_mask_cartpole(self, observation):
+        # Mask velocities (indices 1, 3)
         return observation * np.array([1, 0, 1, 0], dtype="float32")
 
     def _apply_velocity_mask_acrobot(self, observation):
+        # Mask angular velocities (indices 4, 5)
         return observation * np.array([1, 1, 1, 1, 0, 0], dtype="float32")
+
+    def _apply_velocity_mask_lunarlander(self, observation):
+        # LunarLander-v3 observation: [x, y, vx, vy, angle, angular_vel, left_leg_contact, right_leg_contact]
+        # Mask velocities (indices 2, 3, 5)
+        return observation * np.array([1, 1, 0, 0, 1, 0, 1, 1], dtype="float32")
