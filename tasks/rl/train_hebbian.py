@@ -15,6 +15,13 @@ from gymnasium.wrappers import NormalizeReward
 import argparse
 from tqdm import tqdm
 
+import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(project_root))
+
 from models.ctm_rl import ContinuousThoughtMachineRL
 from models.hebbian_components import RewardModulatedHebbianLearner
 from models.lstm_rl import LSTMBaseline
@@ -383,12 +390,25 @@ def train(args):
                         next_obs, next_hidden_states, next_done, env_reward=rewards[step]
                     )
 
-            # Log episode statistics
-            if "final_info" in infos:
+            # Log episode statistics (gymnasium vector env format)
+            if isinstance(infos, dict) and "episode" in infos:
+                episode_info = infos["episode"]
+                # episode_info contains arrays with boolean masks for which envs completed
+                if "_r" in episode_info:  # newer gymnasium format
+                    # _r, _l, _t are boolean masks indicating which envs completed
+                    completed_mask = episode_info["_r"]
+                    for env_idx in range(len(completed_mask)):
+                        if completed_mask[env_idx]:
+                            writer.add_scalar("charts/episodic_return", episode_info["r"][env_idx], global_step)
+                            writer.add_scalar("charts/episodic_length", episode_info["l"][env_idx], global_step)
+
+            # Fallback for older gymnasium API
+            elif "final_info" in infos:
                 for info in infos["final_info"]:
-                    if info and "episode" in info:
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                    episode_info = info[0] if isinstance(info, (list, tuple)) and len(info) > 0 else info
+                    if episode_info and "episode" in episode_info:
+                        writer.add_scalar("charts/episodic_return", episode_info["episode"]["r"], global_step)
+                        writer.add_scalar("charts/episodic_length", episode_info["episode"]["l"], global_step)
 
         # Bootstrap value
         with torch.no_grad():

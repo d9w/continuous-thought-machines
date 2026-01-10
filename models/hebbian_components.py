@@ -78,38 +78,48 @@ class CuriosityReward(nn.Module):
     def update_predictor(self, optimizer: torch.optim.Optimizer) -> Optional[float]:
         """
         Update the curiosity predictor using recent synchronization history.
-        
+
         Args:
             optimizer: Optimizer for the predictor network
-            
+
         Returns:
             loss: Training loss if update was performed, None otherwise
         """
         if len(self.sync_history) < 3:
             return None
-            
+
         # Create training pairs from recent history
         inputs = []
         targets = []
-        
+
         for i in range(len(self.sync_history) - 1):
             inputs.append(self.sync_history[i])
             targets.append(self.sync_history[i + 1])
-            
+
         if len(inputs) == 0:
             return None
-            
+
+        # Stack tensors (they're already detached from storage)
         inputs = torch.stack(inputs)
         targets = torch.stack(targets)
-        
+
+        # Ensure inputs don't require grad (they're data, not parameters)
+        inputs = inputs.detach()
+        targets = targets.detach()
+
         # Update predictor
         optimizer.zero_grad()
         predictions = self.predictor(inputs)
         loss = F.mse_loss(predictions, targets)
-        loss.backward()
-        optimizer.step()
-        
-        return loss.item()
+
+        # Check if loss has grad_fn before backward
+        if loss.requires_grad:
+            loss.backward()
+            optimizer.step()
+            return loss.item()
+        else:
+            # Predictor has no parameters or inputs have no grad
+            return 0.0
 
 
 class AdaptiveNoiseScheduler:
@@ -305,7 +315,7 @@ class RewardModulatedHebbianLearner:
     Complete reward-modulated Hebbian learning system that coordinates all components.
     """
     
-    def __init__(self, 
+    def __init__(self,
                  sync_dim: int,
                  curiosity_lr: float = 0.001,
                  hebbian_lr: float = 0.01,
@@ -313,19 +323,19 @@ class RewardModulatedHebbianLearner:
                  temporal_window: int = 20,
                  temporal_decay: float = 0.9,
                  **noise_scheduler_kwargs):
-        
+
         # Initialize components
         self.curiosity_system = CuriosityReward(sync_dim)
         self.noise_scheduler = AdaptiveNoiseScheduler(**noise_scheduler_kwargs)
         self.temporal_spreader = TemporalRewardSpreader(temporal_window, temporal_decay)
         self.hebbian_updater = HebbianSyncUpdater(hebbian_lr)
-        
+
         # Optimizer for curiosity predictor
         self.curiosity_optimizer = torch.optim.Adam(
-            self.curiosity_system.parameters(), 
+            self.curiosity_system.predictor.parameters(),  # Fixed: predictor is a Sequential, not the module itself
             lr=curiosity_lr
         )
-        
+
         self.curiosity_weight = curiosity_weight
         
     def compute_total_reward(self, 
