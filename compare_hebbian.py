@@ -22,7 +22,7 @@ def get_env_config(env_id):
     """Get environment-specific configuration."""
     configs = {
         "CartPole-v1": {
-            "total_timesteps": 100_000,
+            "total_timesteps": 8_000_000,
             "d_model": 64,
             "n_synch_out": 8,
             "iterations": 1,
@@ -30,7 +30,7 @@ def get_env_config(env_id):
             "mask_velocity": True,
         },
         "Acrobot-v1": {
-            "total_timesteps": 200_000,
+            "total_timesteps": 2_000_000,
             "d_model": 64,
             "n_synch_out": 8,
             "iterations": 1,
@@ -38,7 +38,7 @@ def get_env_config(env_id):
             "mask_velocity": True,
         },
         "LunarLander-v3": {
-            "total_timesteps": 500_000,
+            "total_timesteps": 10_000_000,
             "d_model": 128,
             "n_synch_out": 16,
             "iterations": 1,
@@ -46,7 +46,7 @@ def get_env_config(env_id):
             "mask_velocity": True,
         },
         "MiniGrid-FourRooms-v0": {
-            "total_timesteps": 1_000_000,
+            "total_timesteps": 30_000_000,
             "d_model": 128,
             "n_synch_out": 16,
             "iterations": 2,
