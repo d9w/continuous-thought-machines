@@ -61,8 +61,8 @@ def parse_args():
     parser.add_argument('--env_id', type=str, default="CartPole-v1",
                        choices=["CartPole-v1", "Acrobot-v1", "LunarLander-v3", "MiniGrid-FourRooms-v0"],
                        help='Environment to test on')
-    parser.add_argument('--num_runs', type=int, default=3, help='Number of runs for each approach')
-    parser.add_argument('--seed_start', type=int, default=42, help='Starting seed')
+    parser.add_argument('--num_runs', type=int, default=5, help='Number of runs for each approach')
+    parser.add_argument('--seed_start', type=int, default=0, help='Starting seed')
     # Optional overrides for environment config
     parser.add_argument('--total_timesteps', type=int, default=None, help='Override total timesteps per run')
     parser.add_argument('--d_model', type=int, default=None, help='Override model dimension')
