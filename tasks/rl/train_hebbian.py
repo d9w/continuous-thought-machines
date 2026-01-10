@@ -69,22 +69,22 @@ def parse_args():
     parser.add_argument('--max_environment_steps', type=int, default=500, help='The maximum number of environment steps.')
 
     # Training Configuration
-    parser.add_argument('--num_steps', type=int, default=128, help='The number of environment steps to run in each environment per policy rollout.')
-    parser.add_argument('--total_timesteps', type=int, default=200_000, help='The combined total of all environment steps (across all batches).')
-    parser.add_argument('--num_envs', type=int, default=4, help='The number of parallel game environments.')
+    parser.add_argument('--num_steps', type=int, default=100, help='The number of environment steps to run in each environment per policy rollout.')
+    parser.add_argument('--total_timesteps', type=int, default=1_000_000, help='The combined total of all environment steps (across all batches).')
+    parser.add_argument('--num_envs', type=int, default=8, help='The number of parallel game environments.')
     parser.add_argument('--anneal_lr', action=argparse.BooleanOptionalAction, default=True, help='Use learning rate annealing.')
     parser.add_argument('--discount_gamma', type=float, default=0.99, help='The discount factor gamma.')
     parser.add_argument('--gae_lambda', type=float, default=0.95, help='The lambda for the Generalized Advantage Estimation (GAE).')
     parser.add_argument('--num_minibatches', type=int, default=4, help='The number of mini-batches.')
-    parser.add_argument('--update_epochs', type=int, default=4, help='The number of epochs to update the policy.')
+    parser.add_argument('--update_epochs', type=int, default=1, help='The number of epochs to update the policy.')
     parser.add_argument('--norm_adv', action=argparse.BooleanOptionalAction, default=True, help='Toggle advantages normalization.')
-    parser.add_argument('--clip_coef', type=float, default=0.2, help='The surrogate clipping coefficient.')
-    parser.add_argument('--clip_vloss', action=argparse.BooleanOptionalAction, default=True, help='Use clipped loss for the value function (as per the PPO paper).')
-    parser.add_argument('--ent_coef', type=float, default=0.01, help='Entropy coefficient.')
-    parser.add_argument('--vf_coef', type=float, default=0.5, help='Value function coefficient.')
+    parser.add_argument('--clip_coef', type=float, default=0.1, help='The surrogate clipping coefficient.')
+    parser.add_argument('--clip_vloss', action=argparse.BooleanOptionalAction, default=False, help='Use clipped loss for the value function (as per the PPO paper).')
+    parser.add_argument('--ent_coef', type=float, default=0.1, help='Entropy coefficient.')
+    parser.add_argument('--vf_coef', type=float, default=0.25, help='Value function coefficient.')
     parser.add_argument('--max_grad_norm', type=float, default=0.5, help='The maximum norm for gradient clipping.')
     parser.add_argument('--target_kl', type=float, default=None, help='Target KL divergence threshold.')
-    parser.add_argument('--lr', type=float, default=2.5e-4, help='Learning rate.')
+    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate.')
 
     # Housekeeping
     parser.add_argument('--log_dir', type=str, default='logs/rl/hebbian_comparison', help='Directory for logging.')
@@ -203,83 +203,96 @@ class HebbianAgent(nn.Module):
             layer_init(nn.Linear(64, 1), std=1)
         )
 
-    def get_initial_hidden_states(self, batch_size):
+    def get_initial_state(self, batch_size):
         """Get initial hidden states for the recurrent model."""
         device = self.device
 
         if self.model_type == "ctm":
-            state_trace = torch.zeros((batch_size, self.recurrent_model.d_model, self.recurrent_model.memory_length), device=device)
-            activated_state_trace = self.recurrent_model.start_activated_trace.unsqueeze(0).repeat(batch_size, 1, 1).to(device)
-            return (state_trace, activated_state_trace)
+            initial_state_trace = torch.repeat_interleave(self.recurrent_model.start_trace.unsqueeze(0), batch_size, 0)
+            initial_activated_state_trace = torch.repeat_interleave(self.recurrent_model.start_activated_trace.unsqueeze(0), batch_size, 0)
+            return (initial_state_trace, initial_activated_state_trace)
         else:
-            return torch.zeros((batch_size, self.recurrent_model.d_model), device=device)
+            initial_hidden_state = torch.repeat_interleave(self.recurrent_model.start_hidden_state.unsqueeze(0), batch_size, 0)
+            initial_cell_state = torch.repeat_interleave(self.recurrent_model.start_cell_state.unsqueeze(0), batch_size, 0)
+            return (initial_hidden_state, initial_cell_state)
 
-    def get_value(self, x, hidden_states, done):
+    def _get_hidden_states(self, state, done, num_envs):
+        """Get hidden states with proper reset on done."""
+        if self.model_type == "ctm":
+            return self._get_ctm_hidden_states(state, done, num_envs)
+        elif self.model_type == "lstm":
+            return self._get_lstm_hidden_states(state, done, num_envs)
+        else:
+            raise ValueError("Model type not supported.")
+
+    def _get_lstm_hidden_states(self, lstm_state, done, num_envs):
+        initial_hidden_state, initial_cell_state = self.get_initial_state(num_envs)
+        # Assuming continuous hidden states
+        masked_previous_hidden_state = (1.0 - done).view(-1, 1) * lstm_state[0]
+        masked_previous_cell_state_state = (1.0 - done).view(-1, 1) * lstm_state[1]
+        masked_initial_hidden_state = done.view(-1, 1) * initial_hidden_state
+        masked_initial_cell_state = done.view(-1, 1) * initial_cell_state
+        return (masked_previous_hidden_state + masked_initial_hidden_state), (masked_previous_cell_state_state + masked_initial_cell_state)
+
+    def _get_ctm_hidden_states(self, ctm_state, done, num_envs):
+        initial_state_trace, initial_activated_state_trace = self.get_initial_state(num_envs)
+        if self.continuous_state_trace:
+            masked_previous_state_trace = (1.0 - done).view(-1, 1, 1) * ctm_state[0]
+            masked_previous_activated_state_trace = (1.0 - done).view(-1, 1, 1) * ctm_state[1]
+            masked_initial_state_trace = done.view(-1, 1, 1) * initial_state_trace
+            masked_initial_activated_state_trace = done.view(-1, 1, 1) * initial_activated_state_trace
+            return (masked_previous_state_trace + masked_initial_state_trace), (masked_previous_activated_state_trace + masked_initial_activated_state_trace)
+        else:
+            return (initial_state_trace, initial_activated_state_trace)
+
+    def get_states(self, x, ctm_state, done, track=False):
+        """Get hidden representation from recurrent model."""
+        num_envs = ctm_state[0].shape[0]
+
+        if len(x.shape) == 4:
+            _, C, H, W = x.shape
+            xs = x.reshape((-1, num_envs, C, H, W))
+        elif len(x.shape) == 2:
+            _, C = x.shape
+            xs = x.reshape((-1, num_envs, C))
+        else:
+            raise ValueError("Input shape not supported.")
+
+        done = done.reshape((-1, num_envs))
+        new_hidden = []
+        for x_step, d in zip(xs, done):
+            if not track:
+                synchronisation, ctm_state = self.recurrent_model(x_step, self._get_hidden_states(ctm_state, d, num_envs))
+                tracking_data = None
+                new_hidden += [synchronisation]
+            else:
+                synchronisation, ctm_state, pre_activations, post_activations = self.recurrent_model(x_step, self._get_hidden_states(ctm_state, d, num_envs), track=True)
+                tracking_data = {
+                    'pre_activations': pre_activations,
+                    'post_activations': post_activations,
+                    'synchronisation': synchronisation.detach().cpu().numpy(),
+                }
+                new_hidden += [synchronisation]
+
+        return torch.cat(new_hidden), ctm_state, tracking_data
+
+    def get_value(self, x, ctm_state, done):
         """Get value estimate."""
-        hidden = self.get_states(x, hidden_states, done)
+        hidden, _, _ = self.get_states(x, ctm_state, done)
         return self.critic(hidden)
 
-    def get_states(self, x, hidden_states, done):
-        """Get hidden representation from recurrent model."""
-        if self.continuous_state_trace:
-            hidden, new_hidden_states = self.recurrent_model(x, hidden_states, track=False)
-        else:
-            # Reset state trace on done
-            reset_mask = done.unsqueeze(-1).unsqueeze(-1)
-            if self.model_type == "ctm":
-                state_trace, activated_state_trace = hidden_states
-                state_trace = state_trace * (1 - reset_mask)
-                activated_state_trace = activated_state_trace * (1 - reset_mask)
-                hidden_states = (state_trace, activated_state_trace)
-            else:
-                hidden_states = hidden_states * (1 - reset_mask.squeeze(-1))
-
-            hidden, new_hidden_states = self.recurrent_model(x, hidden_states, track=False)
-
-        return hidden
-
-    def get_action_and_value(self, x, hidden_states, done, action=None, env_reward=None):
-        """Get action and value with optional Hebbian updates."""
-        # Apply Hebbian updates if enabled
-        if self.enable_hebbian and self.hebbian_learner is not None and env_reward is not None:
-            # Get current synchronization for curiosity computation
-            with torch.no_grad():
-                if self.continuous_state_trace:
-                    sync_out, _ = self.recurrent_model(x, hidden_states, track=False)
-                else:
-                    # Reset on done
-                    reset_mask = done.unsqueeze(-1).unsqueeze(-1)
-                    state_trace, activated_state_trace = hidden_states
-                    state_trace = state_trace * (1 - reset_mask)
-                    activated_state_trace = activated_state_trace * (1 - reset_mask)
-                    reset_hidden = (state_trace, activated_state_trace)
-                    sync_out, _ = self.recurrent_model(x, reset_hidden, track=False)
-
-                # Update decay parameters with Hebbian learning
-                avg_env_reward = env_reward.mean().item() if isinstance(env_reward, torch.Tensor) else float(env_reward)
-                updated_params, metrics = self.hebbian_learner.update_sync_parameters(
-                    self.recurrent_model.decay_params_out,
-                    avg_env_reward,
-                    sync_out[0:1]  # Use first sample for prediction
-                )
-
-                # Apply updated parameters (in-place)
-                with torch.no_grad():
-                    self.recurrent_model.decay_params_out.data = updated_params.data
-
-        # Get hidden representation
-        hidden = self.get_states(x, hidden_states, done)
-
-        # Get action logits and value
-        logits = self.actor(hidden)
-        probs = Categorical(logits=logits)
+    def get_action_and_value(self, x, ctm_state, done, action=None, track=False):
+        """Get action and value."""
+        hidden, ctm_state, tracking_data = self.get_states(x, ctm_state, done, track=track)
+        action_logits = self.actor(hidden)
+        action_probs = Categorical(logits=action_logits)
 
         if action is None:
-            action = probs.sample()
+            action = action_probs.sample()
 
         value = self.critic(hidden)
 
-        return action, probs.log_prob(action), probs.entropy(), value
+        return action, action_probs.log_prob(action), action_probs.entropy(), value, ctm_state, tracking_data, action_logits, action_probs.probs
 
     def update_reward_history(self, reward):
         """Track recent rewards for Hebbian learning."""
@@ -297,18 +310,6 @@ class HebbianAgent(nn.Module):
             'noise_variance': self.hebbian_learner.noise_scheduler.get_variance(),
             'recent_avg_reward': np.mean(self.recent_rewards[-10:]) if len(self.recent_rewards) > 0 else 0.0
         }
-
-    def parameters_for_ppo(self):
-        """Get parameters that should be updated by PPO (excludes Hebbian-managed params)."""
-        if self.enable_hebbian:
-            # Exclude decay parameters from PPO updates
-            params = []
-            for name, param in self.named_parameters():
-                if 'decay_params' not in name:
-                    params.append(param)
-            return params
-        else:
-            return self.parameters()
 
 
 def train(args):
@@ -347,8 +348,8 @@ def train(args):
     # Initialize agent
     agent = HebbianAgent(envs.single_action_space.n, args, device).to(device)
 
-    # Optimizer (only for PPO-updatable parameters)
-    optimizer = optim.Adam(agent.parameters_for_ppo(), lr=args.lr, eps=1e-5)
+    # Optimizer - update all parameters via PPO
+    optimizer = optim.Adam(agent.parameters(), lr=args.lr, eps=1e-5)
 
     # Storage
     batch_size = int(args.num_envs * args.num_steps)
@@ -365,12 +366,12 @@ def train(args):
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
-    next_hidden_states = agent.get_initial_hidden_states(args.num_envs)
+    next_state = agent.get_initial_state(args.num_envs)
     num_updates = args.total_timesteps // batch_size
 
     # Training loop
     for update in tqdm(range(1, num_updates + 1), desc="Training"):
-        initial_hidden_states = tuple(h.clone() for h in next_hidden_states)
+        initial_state = (next_state[0].clone(), next_state[1].clone())
 
         # Annealing learning rate
         if args.anneal_lr:
@@ -380,13 +381,14 @@ def train(args):
 
         # Collect rollout
         for step in range(0, args.num_steps):
+            next_obs = torch.Tensor(next_obs).to(device)
             global_step += args.num_envs
             obs[step] = next_obs
             dones[step] = next_done
 
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(
-                    next_obs, next_hidden_states, next_done
+                action, logprob, _, value, next_state, _, _, _ = agent.get_action_and_value(
+                    next_obs, next_state, next_done
                 )
                 values[step] = value.flatten()
             actions[step] = action
@@ -398,43 +400,30 @@ def train(args):
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
 
-            # Update hidden states
-            if agent.continuous_state_trace:
-                with torch.no_grad():
-                    _, next_hidden_states = agent.recurrent_model(obs[step], next_hidden_states, track=False)
-
-            # Update Hebbian learner with environment rewards
+            # Track rewards for Hebbian learning if enabled
             if agent.enable_hebbian:
                 agent.update_reward_history(reward.mean())
-                # Apply Hebbian update with current reward
-                with torch.no_grad():
-                    action_heb, _, _, _ = agent.get_action_and_value(
-                        next_obs, next_hidden_states, next_done, env_reward=rewards[step]
-                    )
 
-            # Log episode statistics (gymnasium vector env format)
-            if isinstance(infos, dict) and "episode" in infos:
-                episode_info = infos["episode"]
-                # episode_info contains arrays with boolean masks for which envs completed
-                if "_r" in episode_info:  # newer gymnasium format
-                    # _r, _l, _t are boolean masks indicating which envs completed
-                    completed_mask = episode_info["_r"]
-                    for env_idx in range(len(completed_mask)):
-                        if completed_mask[env_idx]:
-                            writer.add_scalar("charts/episodic_return", episode_info["r"][env_idx], global_step)
-                            writer.add_scalar("charts/episodic_length", episode_info["l"][env_idx], global_step)
-
-            # Fallback for older gymnasium API
-            elif "final_info" in infos:
+            # Log episode statistics
+            if "final_info" in infos:
                 for info in infos["final_info"]:
-                    episode_info = info[0] if isinstance(info, (list, tuple)) and len(info) > 0 else info
-                    if episode_info and "episode" in episode_info:
-                        writer.add_scalar("charts/episodic_return", episode_info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", episode_info["episode"]["l"], global_step)
+                    if info and "episode" in info[0]:
+                        writer.add_scalar("charts/episodic_return", info[0]["episode"]["r"], global_step)
+                        writer.add_scalar("charts/episodic_length", info[0]["episode"]["l"], global_step)
+
+            elif "episode" in infos:
+                if infos["episode"]:
+                    episode_rewards = infos["episode"]["r"]
+                    episode_lengths = infos["episode"]["l"]
+                    completed_episodes = infos["episode"]["_r"]
+                    for env_idx in range(len(completed_episodes)):
+                        if completed_episodes[env_idx]:
+                            writer.add_scalar("charts/episodic_return", episode_rewards[env_idx], global_step)
+                            writer.add_scalar("charts/episodic_length", episode_lengths[env_idx], global_step)
 
         # Bootstrap value
         with torch.no_grad():
-            next_value = agent.get_value(next_obs, next_hidden_states, next_done).reshape(1, -1)
+            next_value = agent.get_value(next_obs, next_state, next_done).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
@@ -452,34 +441,32 @@ def train(args):
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
+        b_dones = dones.reshape(-1)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
 
-        # Prepare hidden states for training
-        if agent.model_type == "ctm":
-            b_hidden_states = tuple(h.repeat_interleave(args.num_steps, dim=0) for h in initial_hidden_states)
-        else:
-            b_hidden_states = initial_hidden_states.repeat_interleave(args.num_steps, dim=0)
-
         # Optimize policy and value network
-        b_inds = np.arange(batch_size)
+        assert args.num_envs % args.num_minibatches == 0
+        envsperbatch = args.num_envs // args.num_minibatches
+        envinds = np.arange(args.num_envs)
+        flatinds = np.arange(batch_size).reshape(args.num_steps, args.num_envs)
         clipfracs = []
         for epoch in range(args.update_epochs):
-            np.random.shuffle(b_inds)
-            for start in range(0, batch_size, batch_size // args.num_minibatches):
-                end = start + batch_size // args.num_minibatches
-                mb_inds = b_inds[start:end]
+            for start in range(0, args.num_envs, envsperbatch):
+                end = start + envsperbatch
+                mbenvinds = envinds[start:end]
+                mb_inds = flatinds[:, mbenvinds].ravel()
 
                 if agent.model_type == "ctm":
-                    mb_hidden_states = tuple(h[mb_inds] for h in b_hidden_states)
-                else:
-                    mb_hidden_states = b_hidden_states[mb_inds]
+                    selected_hidden_state = (initial_state[0][mbenvinds,:,:], initial_state[1][mbenvinds,:,:])
+                elif agent.model_type == "lstm":
+                    selected_hidden_state = (initial_state[0][mbenvinds,:], initial_state[1][mbenvinds,:])
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                _, newlogprob, entropy, newvalue, _, _, _, _ = agent.get_action_and_value(
                     b_obs[mb_inds],
-                    mb_hidden_states,
-                    torch.zeros(len(mb_inds)).to(device),
+                    selected_hidden_state,
+                    b_dones[mb_inds],
                     b_actions.long()[mb_inds]
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
@@ -519,7 +506,7 @@ def train(args):
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters_for_ppo(), args.max_grad_norm)
+                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
 
             if args.target_kl is not None and approx_kl > args.target_kl:
