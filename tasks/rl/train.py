@@ -18,6 +18,13 @@ from minigrid.wrappers import ImgObsWrapper
 import argparse
 from tqdm import tqdm
 
+import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(project_root))
+
 from models.ctm_rl import ContinuousThoughtMachineRL
 from models.lstm_rl import LSTMBaseline
 from utils.housekeeping import set_seed
@@ -290,7 +297,7 @@ def plot_activations(agent, device, args):
     agent.eval()
     with torch.no_grad():
         for idx in range(args.num_validation_envs):
-            if args.env_id in ("CartPole-v1", "Acrobot-v1"):
+            if args.env_id in ("CartPole-v1", "Acrobot-v1", "LunarLander-v3"):
                 eval_env = make_env_classic_control(args.env_id, args.max_environment_steps, mask_velocity=args.mask_velocity, render_mode="rgb_array")()
             elif "MiniGrid" in args.env_id:
                 eval_env = make_env_minigrid(args.env_id, args.max_environment_steps)()
@@ -380,13 +387,18 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Environment Setup
-    if args.env_id in ("CartPole-v1", "Acrobot-v1"):
+    if args.env_id in ("CartPole-v1", "Acrobot-v1", "LunarLander-v3"):
         envs = gym.vector.SyncVectorEnv([make_env_classic_control(args.env_id, args.max_environment_steps, args.mask_velocity) for _ in range(args.num_envs)])
     elif "MiniGrid" in args.env_id:
         envs = gym.vector.SyncVectorEnv([make_env_minigrid(args.env_id, args.max_environment_steps) for _ in range(args.num_envs)])
+    else:
+        raise NotImplementedError(f"Environment {args.env_id} not supported.")
 
     agent = Agent(envs.single_action_space.n, args, device).to(device)
-    plot_activations(agent, device, args)
+    try:
+        plot_activations(agent, device, args)
+    except (AssertionError, Exception) as e:
+        print(f"Warning: Could not plot activations: {e}")
     print(f'Total params: {sum(p.numel() for p in agent.parameters())}')
     optimizer = optim.Adam(agent.parameters(), lr=args.lr, eps=1e-5)
 
@@ -580,7 +592,10 @@ if __name__ == "__main__":
                 break
 
         if training_iteration % args.track_every == 0 or training_iteration == 1:
-            plot_activations(agent, device, args)
+            try:
+                plot_activations(agent, device, args)
+            except (AssertionError, Exception) as e:
+                print(f"Warning: Could not plot activations: {e}")
 
         if training_iteration % args.save_every == 0 or training_iteration == 1 or global_step == args.total_timesteps-1:
             save_model(agent, optimizer, global_step, training_iteration, episode_rewards_tracking, episode_lengths_tracking, global_steps_tracking, args, f"{args.log_dir}/checkpoint.pt")

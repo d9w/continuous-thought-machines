@@ -74,27 +74,46 @@ def parse_args():
 
 
 def run_experiment(enable_hebbian, seed, env_config, args):
-    """Run a single experiment."""
+    """Run a single experiment.
+
+    IMPORTANT: Uses different training scripts for fair comparison:
+    - Standard: tasks/rl/train.py (original repository implementation)
+    - Hebbian: tasks/rl/train_hebbian.py (with Hebbian learning)
+    """
     hebbian_str = "hebbian" if enable_hebbian else "standard"
     print(f"\n{'='*60}")
     print(f"Running {hebbian_str.upper()} CTM with seed {seed}")
     print(f"{'='*60}\n")
 
-    cmd = [
-        "python", "tasks/rl/train_hebbian.py",
-        "--model_type", "ctm",
-        "--enable_hebbian" if enable_hebbian else "--no-enable_hebbian",
-        "--env_id", args.env_id,
-        "--total_timesteps", str(env_config['total_timesteps']),
-        "--seed", str(seed),
-        "--d_model", str(env_config['d_model']),
-        "--n_synch_out", str(env_config['n_synch_out']),
-        "--iterations", str(env_config['iterations']),
-        "--memory_length", str(env_config['memory_length']),
-        "--run_name", f"comparison_{args.env_id}_{hebbian_str}_seed{seed}",
-        "--log_dir", f"logs/comparison/{args.env_id}/{hebbian_str}",
-        "--save_every", "20",
-    ]
+    base_cmds = [
+            "--model_type", "ctm",
+            "--env_id", args.env_id,
+            "--total_timesteps", str(env_config['total_timesteps']),
+            "--seed", str(seed),
+            "--d_model", str(env_config['d_model']),
+            "--n_synch_out", str(env_config['n_synch_out']),
+            "--iterations", str(env_config['iterations']),
+            "--memory_length", str(env_config['memory_length']),
+            "--run_name", f"comparison_{args.env_id}_{hebbian_str}_seed{seed}",
+            "--log_dir", f"logs/comparison/{args.env_id}/{hebbian_str}",
+            "--save_every", "20",
+        ]
+
+    if enable_hebbian:
+        # Use train_hebbian.py with Hebbian learning enabled
+        cmd = [
+            sys.executable, "tasks/rl/train_hebbian.py",
+            "--enable_hebbian",
+            "--hebbian_lr", "0.02",
+            "--curiosity_weight", "0.5",
+            "--base_noise_variance", "0.02",
+        ] + base_cmds
+    else:
+        # Use original train.py for standard baseline (ensures fair comparison)
+        cmd = [
+            sys.executable, "tasks/rl/train.py",
+            "--neuron_select_type", "first-last",
+        ] + base_cmds
 
     # Add velocity masking flag
     if env_config['mask_velocity']:
@@ -102,14 +121,7 @@ def run_experiment(enable_hebbian, seed, env_config, args):
     else:
         cmd.append("--no-mask_velocity")
 
-    # Add Hebbian-specific parameters
-    if enable_hebbian:
-        cmd.extend([
-            "--hebbian_lr", "0.02",
-            "--curiosity_weight", "0.5",
-            "--base_noise_variance", "0.02",
-        ])
-
+    print(cmd)
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
