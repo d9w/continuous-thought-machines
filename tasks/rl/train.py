@@ -463,8 +463,7 @@ if __name__ == "__main__":
                         wandb.log({
                             "charts/episodic_return": info[0]["episode"]["r"],
                             "charts/episodic_length": info[0]["episode"]["l"],
-                            "global_step": global_step
-                        })
+                        }, step=global_step)
                         episode_rewards_tracking.append(info[0]["episode"]["r"])
                         episode_lengths_tracking.append(info[0]["episode"]["l"])
                         global_steps_tracking.append(global_step)
@@ -485,8 +484,7 @@ if __name__ == "__main__":
                             wandb.log({
                                 "charts/episodic_return": episode_rewards[env_idx],
                                 "charts/episodic_length": episode_lengths[env_idx],
-                                "global_step": global_step
-                            })
+                            }, step=global_step)
                             episode_rewards_tracking.append(episode_rewards[env_idx])
                             episode_lengths_tracking.append(episode_lengths[env_idx])
                             global_steps_tracking.append(global_step)
@@ -593,8 +591,7 @@ if __name__ == "__main__":
                         grad_norms[f"grad_norms/{name}"] = param_norm
                 total_norm = total_norm ** 0.5
                 grad_norms["grad_norms/total"] = total_norm
-                grad_norms["global_step"] = global_step
-                wandb.log(grad_norms)
+                wandb.log(grad_norms, step=global_step)
 
 
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -626,8 +623,7 @@ if __name__ == "__main__":
             "losses/clipfrac": np.mean(clipfracs),
             "losses/explained_variance": explained_var,
             "charts/SPS": int(global_step / (time.time() - start_time)),
-            "global_step": global_step
-        })
+        }, step=global_step)
 
     envs.close()
     wandb.finish()

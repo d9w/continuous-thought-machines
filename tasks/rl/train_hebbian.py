@@ -417,8 +417,7 @@ def train(args):
                         wandb.log({
                             "charts/episodic_return": info[0]["episode"]["r"],
                             "charts/episodic_length": info[0]["episode"]["l"],
-                            "global_step": global_step
-                        })
+                        }, step=global_step)
 
             elif "episode" in infos:
                 if infos["episode"]:
@@ -430,8 +429,7 @@ def train(args):
                             wandb.log({
                                 "charts/episodic_return": episode_rewards[env_idx],
                                 "charts/episodic_length": episode_lengths[env_idx],
-                                "global_step": global_step
-                            })
+                            }, step=global_step)
 
         # Bootstrap value
         with torch.no_grad():
@@ -539,7 +537,6 @@ def train(args):
             "losses/clipfrac": np.mean(clipfracs),
             "losses/explained_variance": explained_var,
             "charts/SPS": int(global_step / (time.time() - start_time)),
-            "global_step": global_step
         }
 
         # Log Hebbian metrics
@@ -548,7 +545,7 @@ def train(args):
             log_dict["hebbian/noise_variance"] = heb_metrics.get('noise_variance', 0)
             log_dict["hebbian/recent_avg_reward"] = heb_metrics.get('recent_avg_reward', 0)
 
-        wandb.log(log_dict)
+        wandb.log(log_dict, step=global_step)
 
         # Save checkpoint
         if update % args.save_every == 0:

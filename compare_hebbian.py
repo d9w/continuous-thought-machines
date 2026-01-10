@@ -4,13 +4,13 @@ Comparison script for Standard CTM vs Hebbian CTM on multiple RL environments.
 This script runs both approaches with the same hyperparameters and compares their performance
 on CartPole, Acrobot, LunarLander, and MiniGrid FourRooms.
 """
-import subprocess
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import argparse
 import wandb
+import subprocess
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent
@@ -81,6 +81,8 @@ def run_experiment(enable_hebbian, seed, env_config, args):
     IMPORTANT: Uses different training scripts for fair comparison:
     - Standard: tasks/rl/train.py (original repository implementation)
     - Hebbian: tasks/rl/train_hebbian.py (with Hebbian learning)
+
+    Runs as subprocess but streams output in real-time so errors are visible.
     """
     hebbian_str = "hebbian" if enable_hebbian else "standard"
     print(f"\n{'='*60}")
@@ -130,13 +132,22 @@ def run_experiment(enable_hebbian, seed, env_config, args):
     else:
         cmd.append("--no-mask_velocity")
 
-    print(cmd)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    print(" ".join(cmd))
+    print()
+
+    # Run without capturing output - this streams directly to console
+    # so you can see errors and progress in real-time
+    result = subprocess.run(cmd)
 
     if result.returncode != 0:
-        print(f"Error running {hebbian_str} experiment:")
-        print(result.stderr)
+        print(f"\n{'='*60}")
+        print(f"ERROR: {hebbian_str.upper()} experiment failed with return code {result.returncode}")
+        print(f"{'='*60}\n")
         return None
+
+    print(f"\n{'='*60}")
+    print(f"COMPLETED: {hebbian_str.upper()} CTM with seed {seed}")
+    print(f"{'='*60}\n")
 
     # Return the run name for W&B lookup
     return run_name
@@ -166,12 +177,14 @@ def parse_wandb_logs(run_name, project_name="ctm-rl", entity=None):
         run = runs[0]
 
     # Get the history
-    history = run.history(keys=["charts/episodic_return", "global_step"])
+    # W&B stores the step parameter in the "_step" column
+    history = run.history(keys=["charts/episodic_return"])
 
     # Filter out NaN values
     history = history.dropna(subset=["charts/episodic_return"])
 
-    steps = history["global_step"].values
+    # The _step column contains the step parameter passed to wandb.log()
+    steps = history["_step"].values
     returns = history["charts/episodic_return"].values
 
     return np.array(steps), np.array(returns)
