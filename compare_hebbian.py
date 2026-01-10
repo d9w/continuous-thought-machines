@@ -21,7 +21,7 @@ def get_env_config(env_id):
     """Get environment-specific configuration."""
     configs = {
         "CartPole-v1": {
-            "total_timesteps": 8_000_000,
+            "total_timesteps": 10_000_000,
             "d_model": 64,
             "n_synch_out": 8,
             "iterations": 1,
@@ -29,7 +29,7 @@ def get_env_config(env_id):
             "mask_velocity": True,
         },
         "Acrobot-v1": {
-            "total_timesteps": 2_000_000,
+            "total_timesteps": 5_000_000,
             "d_model": 64,
             "n_synch_out": 8,
             "iterations": 1,
@@ -101,9 +101,10 @@ def run_experiment(enable_hebbian, seed, env_config, args):
             "--iterations", str(env_config['iterations']),
             "--memory_length", str(env_config['memory_length']),
             "--run_name", run_name,
-            "--log_dir", f"logs/comparison/{args.env_id}/{hebbian_str}",
+            "--log_dir", f"logs/comparison/{args.env_id}/{hebbian_str}/seed{seed}",  # Unique dir per seed
             "--save_every", "20",
             "--wandb_project", args.wandb_project,
+            "--no-reload",  # Disable checkpoint loading for clean runs
         ]
 
     # Add wandb entity if provided
