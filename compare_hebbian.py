@@ -5,13 +5,12 @@ This script runs both approaches with the same hyperparameters and compares thei
 on CartPole, Acrobot, LunarLander, and MiniGrid FourRooms.
 """
 import subprocess
-import os
 import sys
-import json
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import argparse
+import wandb
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent
@@ -70,6 +69,9 @@ def parse_args():
     parser.add_argument('--n_synch_out', type=int, default=None, help='Override number of sync neurons')
     parser.add_argument('--iterations', type=int, default=None, help='Override number of internal ticks')
     parser.add_argument('--memory_length', type=int, default=None, help='Override memory length')
+    # Weights & Biases config
+    parser.add_argument('--wandb_project', type=str, default='ctm-rl', help='Weights & Biases project name')
+    parser.add_argument('--wandb_entity', type=str, default=None, help='Weights & Biases entity (username or team)')
     return parser.parse_args()
 
 
@@ -85,6 +87,8 @@ def run_experiment(enable_hebbian, seed, env_config, args):
     print(f"Running {hebbian_str.upper()} CTM with seed {seed}")
     print(f"{'='*60}\n")
 
+    run_name = f"comparison_{args.env_id}_{hebbian_str}_seed{seed}"
+
     base_cmds = [
             "--model_type", "ctm",
             "--env_id", args.env_id,
@@ -94,10 +98,15 @@ def run_experiment(enable_hebbian, seed, env_config, args):
             "--n_synch_out", str(env_config['n_synch_out']),
             "--iterations", str(env_config['iterations']),
             "--memory_length", str(env_config['memory_length']),
-            "--run_name", f"comparison_{args.env_id}_{hebbian_str}_seed{seed}",
+            "--run_name", run_name,
             "--log_dir", f"logs/comparison/{args.env_id}/{hebbian_str}",
             "--save_every", "20",
+            "--wandb_project", args.wandb_project,
         ]
+
+    # Add wandb entity if provided
+    if args.wandb_entity:
+        base_cmds.extend(["--wandb_entity", args.wandb_entity])
 
     if enable_hebbian:
         # Use train_hebbian.py with Hebbian learning enabled
@@ -129,28 +138,41 @@ def run_experiment(enable_hebbian, seed, env_config, args):
         print(result.stderr)
         return None
 
-    return f"logs/comparison/{args.env_id}/{hebbian_str}"
+    # Return the run name for W&B lookup
+    return run_name
 
 
-def parse_tensorboard_logs(log_dir):
-    """Parse TensorBoard logs to extract episode returns."""
-    from tensorboard.backend.event_processing import event_accumulator
+def parse_wandb_logs(run_name, project_name="ctm-rl", entity=None):
+    """Parse Weights & Biases logs to extract episode returns."""
+    api = wandb.Api()
 
-    returns = []
-    steps = []
+    # Construct the full run path
+    if entity:
+        run_path = f"{entity}/{project_name}/{run_name}"
+    else:
+        run_path = f"{project_name}/{run_name}"
 
-    # Find all event files in the directory
-    for root, dirs, files in os.walk(log_dir):
-        for file in files:
-            if file.startswith('events.out.tfevents'):
-                event_file = os.path.join(root, file)
-                ea = event_accumulator.EventAccumulator(event_file)
-                ea.Reload()
+    try:
+        # Try to get the run
+        run = api.run(run_path)
+    except Exception as e:
+        print(f"Could not find run {run_path}: {e}")
+        # Try to find runs by name
+        runs = api.runs(f"{entity}/{project_name}" if entity else project_name,
+                       filters={"display_name": run_name})
+        if len(runs) == 0:
+            print(f"No runs found with name {run_name}")
+            return np.array([]), np.array([])
+        run = runs[0]
 
-                if 'charts/episodic_return' in ea.Tags()['scalars']:
-                    for event in ea.Scalars('charts/episodic_return'):
-                        steps.append(event.step)
-                        returns.append(event.value)
+    # Get the history
+    history = run.history(keys=["charts/episodic_return", "global_step"])
+
+    # Filter out NaN values
+    history = history.dropna(subset=["charts/episodic_return"])
+
+    steps = history["global_step"].values
+    returns = history["charts/episodic_return"].values
 
     return np.array(steps), np.array(returns)
 
@@ -270,39 +292,39 @@ def main():
     print("="*60)
 
     # Run experiments
-    standard_log_dirs = []
-    hebbian_log_dirs = []
+    standard_run_names = []
+    hebbian_run_names = []
 
     for run in range(args.num_runs):
         seed = args.seed_start + run
 
         # Run standard CTM
-        log_dir = run_experiment(enable_hebbian=False, seed=seed, env_config=env_config, args=args)
-        if log_dir:
-            standard_log_dirs.append(log_dir)
+        run_name = run_experiment(enable_hebbian=False, seed=seed, env_config=env_config, args=args)
+        if run_name:
+            standard_run_names.append(run_name)
 
         # Run Hebbian CTM
-        log_dir = run_experiment(enable_hebbian=True, seed=seed, env_config=env_config, args=args)
-        if log_dir:
-            hebbian_log_dirs.append(log_dir)
+        run_name = run_experiment(enable_hebbian=True, seed=seed, env_config=env_config, args=args)
+        if run_name:
+            hebbian_run_names.append(run_name)
 
-    # Parse results
+    # Parse results from W&B
     print("\n" + "="*60)
-    print("PARSING RESULTS...")
+    print("PARSING RESULTS FROM WEIGHTS & BIASES...")
     print("="*60)
 
     try:
         standard_results = []
-        for log_dir in standard_log_dirs:
-            steps, returns = parse_tensorboard_logs(log_dir)
+        for run_name in standard_run_names:
+            steps, returns = parse_wandb_logs(run_name, args.wandb_project, args.wandb_entity)
             standard_results.append((steps, returns))
-            print(f"Standard CTM: {len(returns)} episodes logged")
+            print(f"Standard CTM ({run_name}): {len(returns)} episodes logged")
 
         hebbian_results = []
-        for log_dir in hebbian_log_dirs:
-            steps, returns = parse_tensorboard_logs(log_dir)
+        for run_name in hebbian_run_names:
+            steps, returns = parse_wandb_logs(run_name, args.wandb_project, args.wandb_entity)
             hebbian_results.append((steps, returns))
-            print(f"Hebbian CTM: {len(returns)} episodes logged")
+            print(f"Hebbian CTM ({run_name}): {len(returns)} episodes logged")
 
         # Plot comparison
         print("\n" + "="*60)
@@ -334,7 +356,7 @@ def main():
 
     except Exception as e:
         print(f"Error parsing results: {e}")
-        print("You can manually check the TensorBoard logs in logs/comparison/")
+        print(f"You can manually check the Weights & Biases runs at: https://wandb.ai/{args.wandb_entity + '/' if args.wandb_entity else ''}{args.wandb_project}")
 
 
 if __name__ == "__main__":

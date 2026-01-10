@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 from gymnasium.wrappers import NormalizeReward
 import minigrid
 from minigrid.wrappers import ImgObsWrapper
@@ -88,6 +88,8 @@ def parse_args():
 
     # Housekeeping
     parser.add_argument('--log_dir', type=str, default='logs/rl/hebbian_comparison', help='Directory for logging.')
+    parser.add_argument('--wandb_project', type=str, default='ctm-rl', help='Weights & Biases project name.')
+    parser.add_argument('--wandb_entity', type=str, default=None, help='Weights & Biases entity (username or team).')
     parser.add_argument('--run_name', type=str, default='hebbian_experiment', help='Name of the run for logging and tracking.')
     parser.add_argument('--save_every', type=int, default=50, help='Save checkpoint frequency.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
@@ -318,11 +320,15 @@ def train(args):
     log_dir = os.path.join(args.log_dir, run_name)
     os.makedirs(log_dir, exist_ok=True)
 
-    writer = SummaryWriter(log_dir)
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n" + "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()]),
+    # Initialize Weights & Biases
+    wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=run_name,
+        config=vars(args),
+        dir=log_dir,
     )
+    print(f"Logging to Weights & Biases: {wandb.run.url}")
 
     # Seeding
     set_seed(args.seed)
@@ -408,8 +414,11 @@ def train(args):
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info[0]:
-                        writer.add_scalar("charts/episodic_return", info[0]["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info[0]["episode"]["l"], global_step)
+                        wandb.log({
+                            "charts/episodic_return": info[0]["episode"]["r"],
+                            "charts/episodic_length": info[0]["episode"]["l"],
+                            "global_step": global_step
+                        })
 
             elif "episode" in infos:
                 if infos["episode"]:
@@ -418,8 +427,11 @@ def train(args):
                     completed_episodes = infos["episode"]["_r"]
                     for env_idx in range(len(completed_episodes)):
                         if completed_episodes[env_idx]:
-                            writer.add_scalar("charts/episodic_return", episode_rewards[env_idx], global_step)
-                            writer.add_scalar("charts/episodic_length", episode_lengths[env_idx], global_step)
+                            wandb.log({
+                                "charts/episodic_return": episode_rewards[env_idx],
+                                "charts/episodic_length": episode_lengths[env_idx],
+                                "global_step": global_step
+                            })
 
         # Bootstrap value
         with torch.no_grad():
@@ -517,21 +529,26 @@ def train(args):
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         # Logging
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        log_dict = {
+            "charts/learning_rate": optimizer.param_groups[0]["lr"],
+            "losses/value_loss": v_loss.item(),
+            "losses/policy_loss": pg_loss.item(),
+            "losses/entropy": entropy_loss.item(),
+            "losses/old_approx_kl": old_approx_kl.item(),
+            "losses/approx_kl": approx_kl.item(),
+            "losses/clipfrac": np.mean(clipfracs),
+            "losses/explained_variance": explained_var,
+            "charts/SPS": int(global_step / (time.time() - start_time)),
+            "global_step": global_step
+        }
 
         # Log Hebbian metrics
         if agent.enable_hebbian:
             heb_metrics = agent.get_hebbian_metrics()
-            writer.add_scalar("hebbian/noise_variance", heb_metrics.get('noise_variance', 0), global_step)
-            writer.add_scalar("hebbian/recent_avg_reward", heb_metrics.get('recent_avg_reward', 0), global_step)
+            log_dict["hebbian/noise_variance"] = heb_metrics.get('noise_variance', 0)
+            log_dict["hebbian/recent_avg_reward"] = heb_metrics.get('recent_avg_reward', 0)
+
+        wandb.log(log_dict)
 
         # Save checkpoint
         if update % args.save_every == 0:
@@ -544,7 +561,7 @@ def train(args):
             }, checkpoint_path)
 
     envs.close()
-    writer.close()
+    wandb.finish()
 
     return log_dir
 

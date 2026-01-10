@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 from gymnasium.wrappers import NormalizeReward
 import minigrid
 from minigrid.wrappers import ImgObsWrapper
@@ -76,9 +76,10 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate.')
     parser.add_argument('--num_validation_envs', type=int, default=1, help='Number of environments to evaluate with during training.')
 
-    # Housekeeping 
+    # Housekeeping
     parser.add_argument('--log_dir', type=str, default='logs/rl/acrobot', help='Directory for logging.')
-    parser.add_argument('--tb_log_dir', type=str, default='logs/runs', help='Directory for tensorboard logging.')
+    parser.add_argument('--wandb_project', type=str, default='ctm-rl', help='Weights & Biases project name.')
+    parser.add_argument('--wandb_entity', type=str, default=None, help='Weights & Biases entity (username or team).')
     parser.add_argument('--run_name', type=str, default='default_run', help='Name of the run for logging and tracking.')
     parser.add_argument('--save_every', type=int, default=100, help='Save checkpoint frequency.')
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
@@ -376,13 +377,15 @@ if __name__ == "__main__":
     set_seed(args.seed)
     os.makedirs(args.log_dir, exist_ok=True)
 
-    print(f"Tensorboard logging to {args.tb_log_dir}/{args.run_name}")
-
-    writer = SummaryWriter(f"{args.tb_log_dir}/{args.run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    # Initialize Weights & Biases
+    wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.run_name,
+        config=vars(args),
+        dir=args.log_dir,
     )
+    print(f"Logging to Weights & Biases: {wandb.run.url}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -457,8 +460,11 @@ if __name__ == "__main__":
                             "return": round(info[0]["episode"]["r"], 2),
                             "length": info[0]["episode"]["l"]
                         })
-                        writer.add_scalar("charts/episodic_return", info[0]["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info[0]["episode"]["l"], global_step)
+                        wandb.log({
+                            "charts/episodic_return": info[0]["episode"]["r"],
+                            "charts/episodic_length": info[0]["episode"]["l"],
+                            "global_step": global_step
+                        })
                         episode_rewards_tracking.append(info[0]["episode"]["r"])
                         episode_lengths_tracking.append(info[0]["episode"]["l"])
                         global_steps_tracking.append(global_step)
@@ -476,8 +482,11 @@ if __name__ == "__main__":
                                 "return": round(episode_rewards[env_idx], 2),
                                 "length": episode_lengths[env_idx]
                             })
-                            writer.add_scalar("charts/episodic_return", episode_rewards[env_idx], global_step)
-                            writer.add_scalar("charts/episodic_length", episode_lengths[env_idx], global_step)
+                            wandb.log({
+                                "charts/episodic_return": episode_rewards[env_idx],
+                                "charts/episodic_length": episode_lengths[env_idx],
+                                "global_step": global_step
+                            })
                             episode_rewards_tracking.append(episode_rewards[env_idx])
                             episode_lengths_tracking.append(episode_lengths[env_idx])
                             global_steps_tracking.append(global_step)
@@ -574,15 +583,18 @@ if __name__ == "__main__":
 
                 # Log gradient norms
                 total_norm = 0
+                grad_norms = {}
                 for name, param in agent.named_parameters():
                     if param.grad is None:
                         print(f"Warning: Gradient for {name} is None!")
                     else:
                         param_norm = param.grad.data.norm(2).item()
                         total_norm += param_norm ** 2
-                        writer.add_scalar(f"grad_norms/{name}", param_norm, global_step)
+                        grad_norms[f"grad_norms/{name}"] = param_norm
                 total_norm = total_norm ** 0.5
-                writer.add_scalar("grad_norms/total", total_norm, global_step)
+                grad_norms["grad_norms/total"] = total_norm
+                grad_norms["global_step"] = global_step
+                wandb.log(grad_norms)
 
 
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -604,15 +616,18 @@ if __name__ == "__main__":
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        writer.add_scalar("charts/lr", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        wandb.log({
+            "charts/lr": optimizer.param_groups[0]["lr"],
+            "losses/value_loss": v_loss.item(),
+            "losses/policy_loss": pg_loss.item(),
+            "losses/entropy": entropy_loss.item(),
+            "losses/old_approx_kl": old_approx_kl.item(),
+            "losses/approx_kl": approx_kl.item(),
+            "losses/clipfrac": np.mean(clipfracs),
+            "losses/explained_variance": explained_var,
+            "charts/SPS": int(global_step / (time.time() - start_time)),
+            "global_step": global_step
+        })
 
     envs.close()
-    writer.close()
+    wandb.finish()
