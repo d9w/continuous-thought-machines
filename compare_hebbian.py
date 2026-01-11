@@ -313,7 +313,7 @@ def main():
         seed = args.seed_start + run
 
         # Run standard CTM
-        run_name = run_experiment(enable_hebbian=False, seed=seed, env_config=env_config, args=args)
+        run_name = None#run_experiment(enable_hebbian=False, seed=seed, env_config=env_config, args=args)
         if run_name:
             standard_run_names.append(run_name)
 
