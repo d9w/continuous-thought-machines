@@ -177,6 +177,7 @@ class HebbianAgent(nn.Module):
                     reset_threshold=args.reset_threshold
                 )
                 self.recent_rewards = []
+                self.last_synchronization = None  # Store last sync output for Hebbian learning
             else:
                 self.hebbian_learner = None
         else:
@@ -286,6 +287,11 @@ class HebbianAgent(nn.Module):
     def get_action_and_value(self, x, ctm_state, done, action=None, track=False):
         """Get action and value."""
         hidden, ctm_state, tracking_data = self.get_states(x, ctm_state, done, track=track)
+
+        # Store synchronization output for Hebbian learning
+        if self.enable_hebbian and hasattr(self, 'last_synchronization'):
+            self.last_synchronization = hidden.detach().clone()
+
         action_logits = self.actor(hidden)
         action_probs = Categorical(logits=action_logits)
 
@@ -427,24 +433,21 @@ def train(args):
                 # Update reward history
                 agent.update_reward_history(reward.mean())
 
-                # Apply Hebbian updates to decay parameters based on reward
-                # We need to access the current synchronization state from the last forward pass
-                # The recurrent model should have stored this internally
+                # Apply Hebbian updates using the stored synchronization output
                 with torch.no_grad():
                     # Get the decay parameters from the CTM model
-                    if hasattr(agent.recurrent_model, 'decay_params_out'):
+                    if hasattr(agent.recurrent_model, 'decay_params_out') and agent.last_synchronization is not None:
                         decay_params = agent.recurrent_model.decay_params_out
 
-                        # Create a dummy synchronization vector for the Hebbian learner
-                        # In a proper implementation, we'd track the actual sync from the forward pass
-                        # For now, use a placeholder based on the current hidden state
-                        current_sync = next_state[0].mean(dim=0)  # Average across batch
+                        # Use the actual synchronization output from the last forward pass
+                        # Average across batch to get a single vector
+                        current_sync = agent.last_synchronization.mean(dim=0, keepdim=True)
 
                         # Apply Hebbian update
                         updated_params, heb_metrics = agent.hebbian_learner.update_sync_parameters(
                             decay_params,
                             reward.mean().item(),
-                            current_sync.unsqueeze(0)
+                            current_sync
                         )
 
                         # Update the decay parameters in-place (no gradients)
