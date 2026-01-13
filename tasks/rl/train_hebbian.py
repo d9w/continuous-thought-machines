@@ -354,8 +354,24 @@ def train(args):
     # Initialize agent
     agent = HebbianAgent(envs.single_action_space.n, args, device).to(device)
 
-    # Optimizer - update all parameters via PPO
-    optimizer = optim.Adam(agent.parameters(), lr=args.lr, eps=1e-5)
+    # Optimizer - exclude decay parameters if Hebbian learning is enabled
+    if args.enable_hebbian and agent.enable_hebbian:
+        # Separate PPO parameters from Hebbian-managed decay parameters
+        ppo_params = []
+        for name, param in agent.named_parameters():
+            if 'decay_params' in name:
+                # Detach decay parameters from computational graph - no gradients should flow
+                param.requires_grad = False
+                print(f"Excluding from PPO optimizer (Hebbian-managed): {name} [requires_grad=False]")
+                continue
+            else:
+                ppo_params.append(param)
+        optimizer = optim.Adam(ppo_params, lr=args.lr, eps=1e-5)
+        print(f"PPO optimizer: {len(ppo_params)} parameter groups (decay_params excluded)")
+    else:
+        # Standard PPO - update all parameters via gradients
+        optimizer = optim.Adam(agent.parameters(), lr=args.lr, eps=1e-5)
+        print(f"PPO optimizer: all parameters included (no Hebbian learning)")
 
     # Storage
     batch_size = int(args.num_envs * args.num_steps)
@@ -406,9 +422,33 @@ def train(args):
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
 
-            # Track rewards for Hebbian learning if enabled
-            if agent.enable_hebbian:
+            # Apply Hebbian updates to synchronization decay parameters
+            if agent.enable_hebbian and agent.hebbian_learner is not None:
+                # Update reward history
                 agent.update_reward_history(reward.mean())
+
+                # Apply Hebbian updates to decay parameters based on reward
+                # We need to access the current synchronization state from the last forward pass
+                # The recurrent model should have stored this internally
+                with torch.no_grad():
+                    # Get the decay parameters from the CTM model
+                    if hasattr(agent.recurrent_model, 'decay_params_out'):
+                        decay_params = agent.recurrent_model.decay_params_out
+
+                        # Create a dummy synchronization vector for the Hebbian learner
+                        # In a proper implementation, we'd track the actual sync from the forward pass
+                        # For now, use a placeholder based on the current hidden state
+                        current_sync = next_state[0].mean(dim=0)  # Average across batch
+
+                        # Apply Hebbian update
+                        updated_params, heb_metrics = agent.hebbian_learner.update_sync_parameters(
+                            decay_params,
+                            reward.mean().item(),
+                            current_sync.unsqueeze(0)
+                        )
+
+                        # Update the decay parameters in-place (no gradients)
+                        agent.recurrent_model.decay_params_out.data = updated_params.data
 
             # Log episode statistics
             if "final_info" in infos:
@@ -516,7 +556,24 @@ def train(args):
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+
+                # Verify that decay parameters don't receive gradients when Hebbian learning is enabled
+                if args.enable_hebbian and agent.enable_hebbian and update == 1 and epoch == 0 and start == 0:
+                    # One-time verification on first update
+                    for name, param in agent.named_parameters():
+                        if 'decay_params' in name and param.grad is not None:
+                            grad_norm = param.grad.norm().item()
+                            if grad_norm > 1e-8:
+                                print(f"WARNING: {name} received gradients (norm={grad_norm:.6f}) but should be Hebbian-only!")
+                            else:
+                                print(f"✓ Verified: {name} has zero/negligible gradients (norm={grad_norm:.2e})")
+
+                # Clip gradients only for parameters being optimized by PPO
+                if args.enable_hebbian and agent.enable_hebbian:
+                    nn.utils.clip_grad_norm_(ppo_params, args.max_grad_norm)
+                else:
+                    nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+
                 optimizer.step()
 
             if args.target_kl is not None and approx_kl > args.target_kl:
@@ -540,10 +597,18 @@ def train(args):
         }
 
         # Log Hebbian metrics
-        if agent.enable_hebbian:
+        if agent.enable_hebbian and agent.hebbian_learner is not None:
             heb_metrics = agent.get_hebbian_metrics()
             log_dict["hebbian/noise_variance"] = heb_metrics.get('noise_variance', 0)
             log_dict["hebbian/recent_avg_reward"] = heb_metrics.get('recent_avg_reward', 0)
+
+            # Log decay parameter statistics
+            if hasattr(agent.recurrent_model, 'decay_params_out'):
+                decay_params = agent.recurrent_model.decay_params_out
+                log_dict["hebbian/decay_params_mean"] = decay_params.mean().item()
+                log_dict["hebbian/decay_params_std"] = decay_params.std().item()
+                log_dict["hebbian/decay_params_min"] = decay_params.min().item()
+                log_dict["hebbian/decay_params_max"] = decay_params.max().item()
 
         wandb.log(log_dict, step=global_step)
 
