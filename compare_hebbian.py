@@ -89,7 +89,7 @@ def run_experiment(enable_hebbian, seed, env_config, args):
     print(f"Running {hebbian_str.upper()} CTM with seed {seed}")
     print(f"{'='*60}\n")
 
-    run_name = f"comparison_{args.env_id}_{hebbian_str}_seed{seed}"
+    run_name = f"fix_{args.env_id}_{hebbian_str}_seed{seed}"
 
     base_cmds = [
             "--model_type", "ctm",
