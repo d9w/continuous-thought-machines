@@ -115,9 +115,9 @@ def run_experiment(enable_hebbian, seed, env_config, args):
         cmd = [
             sys.executable, "tasks/rl/train_hebbian.py",
             "--enable_hebbian",
-            "--hebbian_lr", "0.02",
+            "--hebbian_lr", "0.1",
             "--curiosity_weight", "0.5",
-            "--base_noise_variance", "0.02",
+            "--base_noise_variance", "0.05",
         ] + base_cmds
     else:
         # Use original train.py for standard baseline (ensures fair comparison)
